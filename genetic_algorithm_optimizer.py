@@ -575,21 +575,34 @@ def evaluate_children(children, evaluation_runs=100, epoch_num=0):
     best_avg_so_far = float('inf')
     
     with Pool(processes=num_workers, initializer=init_worker, initargs=(_shared_draws,)) as pool:
-        for child_id, _, avg_potions in pool.imap_unordered(evaluate_strategy_worker, eval_args):
-            avg_results.append((child_id, avg_potions))
-            completed += 1
-            
-            if avg_potions < best_avg_so_far:
-                best_avg_so_far = avg_potions
-            
-            if completed % update_interval == 0 or completed == num_children:
-                percentage = (completed / num_children) * 100
-                bar_length = 40
-                filled = int(bar_length * completed / num_children)
-                bar = '█' * filled + '░' * (bar_length - filled)
-                best_info = f" | Best avg: {best_avg_so_far:.2f}" if best_avg_so_far < float('inf') else ""
-                print(f"\rEpoch {epoch_num} Progress: [{bar}] {percentage:6.2f}% ({completed}/{num_children} children){best_info}", 
-                      end='', flush=True)
+        try:
+            for child_id, _, avg_potions in pool.imap_unordered(evaluate_strategy_worker, eval_args):
+                avg_results.append((child_id, avg_potions))
+                completed += 1
+                
+                if avg_potions < best_avg_so_far:
+                    best_avg_so_far = avg_potions
+                
+                if completed % update_interval == 0 or completed == num_children:
+                    percentage = (completed / num_children) * 100
+                    bar_length = 40
+                    filled = int(bar_length * completed / num_children)
+                    bar = '█' * filled + '░' * (bar_length - filled)
+                    best_info = f" | Best avg: {best_avg_so_far:.2f}" if best_avg_so_far < float('inf') else ""
+                    print(f"\rEpoch {epoch_num} Progress: [{bar}] {percentage:6.2f}% ({completed}/{num_children} children){best_info}", 
+                          end='', flush=True)
+        except KeyboardInterrupt:
+            # Suppress worker process messages when interrupting
+            import sys
+            import io
+            old_stderr = sys.stderr
+            # Keep stderr suppressed (already done by signal handler)
+            try:
+                pool.terminate()
+                pool.join(timeout=1)
+            except:
+                pass
+            raise  # Re-raise to be caught by outer handler
     
     # Print newline after progress bar completes
     print()
@@ -622,7 +635,8 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
     
     Args:
         parent_strategy_file: Path to initial parent strategy CSV file (optional)
-            If None, generates random children from template
+            If None, generates random children from template.
+            Note: strategy_template.csv already has all potions selected for each draw.
         template_file: Path to template CSV file (default: "strategy_template.csv")
             Used when parent_strategy_file is None
         num_children: Number of children per generation (default: 100)
@@ -635,6 +649,33 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
     Returns:
         Best strategy across all epochs
     """
+    # Set up signal handler and suppress multiprocessing logging
+    import signal
+    import sys
+    import io
+    import logging
+    import os
+    from multiprocessing import util
+    
+    # Suppress multiprocessing worker messages
+    util.log_to_stderr(logging.WARNING)
+    
+    # Store original stderr for restoration
+    _original_stderr = sys.stderr
+    
+    def signal_handler(signum, frame):
+        # Suppress stderr immediately when SIGINT is received
+        # Redirect stderr to /dev/null at OS level to suppress worker messages
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stderr.fileno())
+        except:
+            sys.stderr = io.StringIO()
+        raise KeyboardInterrupt()
+    
+    # Register signal handler for SIGINT (Ctrl-C)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     print("=" * 70)
     print("GENETIC ALGORITHM - MULTI-EPOCH OPTIMIZATION")
     print("=" * 70)
@@ -676,10 +717,9 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
     except (AttributeError, ValueError):
         pass
     
-    # Track best across all epochs
+    # Track best across all epochs (by avg_potions_used, not score)
     best_overall = None
-    best_overall_score = float('-inf')
-    best_overall_avg_potions = None
+    best_overall_avg_potions = float('inf')  # Track lowest avg_potions_used
     current_generation = None
     last_epoch_num = 0
     
@@ -702,11 +742,10 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
         if best_score <= 0:
             print("\n⚠ No children have positive scores. Ending simulation.")
         else:
-            # Update best overall
+            # Update best overall (by avg_potions_used, lowest is best)
             best_child_id, best_score, best_avg_potions, best_rows = current_generation[0]
-            if best_score > best_overall_score:
+            if best_avg_potions < best_overall_avg_potions:
                 best_overall = best_rows
-                best_overall_score = best_score
                 best_overall_avg_potions = best_avg_potions
         
         # Run subsequent epochs until Ctrl-C
@@ -734,25 +773,39 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
                 print("\n⚠ No children have positive scores. Ending simulation.")
                 break
             
-            # Update best overall
+            # Update best overall (by avg_potions_used, lowest is best)
             best_child_id, best_score, best_avg_potions, best_rows = current_generation[0]
-            if best_score > best_overall_score:
+            if best_avg_potions < best_overall_avg_potions:
                 best_overall = best_rows
-                best_overall_score = best_score
                 best_overall_avg_potions = best_avg_potions
             epoch += 1
             
     except KeyboardInterrupt:
-        print("\n\n" + "=" * 70)
-        print("INTERRUPTED BY USER (Ctrl-C)")
-        print("=" * 70)
-        print(f"Completed {epoch} epochs")
-        if current_generation:
-            best_child_id, best_score, best_avg_potions, best_rows = current_generation[0]
-            if best_score > best_overall_score:
-                best_overall = best_rows
-                best_overall_score = best_score
-                best_overall_avg_potions = best_avg_potions
+        # Suppress stack trace and worker process messages on Ctrl-C
+        # stderr should already be suppressed by signal handler, but ensure it's suppressed
+        try:
+            import os
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stderr.fileno())
+        except:
+            sys.stderr = io.StringIO()
+        
+        try:
+            print("\n\n" + "=" * 70)
+            print("INTERRUPTED BY USER (Ctrl-C)")
+            print("=" * 70)
+            print(f"Completed {epoch} epochs")
+            if current_generation:
+                best_child_id, best_score, best_avg_potions, best_rows = current_generation[0]
+                if best_avg_potions < best_overall_avg_potions:
+                    best_overall = best_rows
+                    best_overall_avg_potions = best_avg_potions
+        finally:
+            # Restore stderr
+            try:
+                sys.stderr = _original_stderr
+            except:
+                pass
     
     # Save overall best strategy
     print("\n" + "=" * 70)
@@ -761,11 +814,10 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
     if best_overall is None and current_generation:
         # Use best from current generation if no overall best was set
         best_overall = current_generation[0][3]
-        best_overall_score = current_generation[0][1]
         best_overall_avg_potions = current_generation[0][2]
     
-    if best_overall and best_overall_avg_potions is not None:
-        # Format avg_potions to 2 decimal places for filename
+    if best_overall and best_overall_avg_potions != float('inf'):
+        # Use the best strategy's avg_potions_used value (not an epoch average)
         filename = f"level_{level}_avg_{int(best_overall_avg_potions)}_runs_{evaluation_runs}.csv"
         output_path = os.path.join(base_output_dir, filename)
         
@@ -774,7 +826,6 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
         
         save_strategy_to_csv(best_overall, output_path)
         print(f"Best strategy saved to: {output_path}")
-        print(f"Best overall score: {best_overall_score:.2f}")
         print(f"Best overall avg_potions_used: {best_overall_avg_potions:.2f}")
     else:
         print("No valid strategies found.")
@@ -788,7 +839,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Run genetic algorithm optimization on strategy file.")
     parser.add_argument(
-        "parent_strategy",
+        "--parent_strategy",
         type=str,
         nargs='?',
         default=None,
