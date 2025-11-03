@@ -589,9 +589,11 @@ def evaluate_children(children, evaluation_runs=100, epoch_num=0):
     print(f"\n  Calculating scores (reference: {worst_avg_reference:.2f})...")
     
     # Calculate scores from stored averages (no re-evaluation needed)
+    # Score = (worst_avg_reference - avg_potions)²
     child_results = []
     for child_id, avg_potions in avg_results:
-        score = worst_avg_reference - avg_potions
+        base_score = worst_avg_reference - avg_potions
+        score = base_score ** 2
         child_results.append((child_id, score, avg_potions, children[child_id]))
     
     # Sort by score (higher is better)
