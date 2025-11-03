@@ -5,6 +5,8 @@ import csv
 import argparse
 import os
 import shutil
+import multiprocessing
+from multiprocessing import Pool
 # === Setup ===
 
 class Potion:
@@ -38,72 +40,184 @@ target = {"mox": 61050, "aga": 52550, "lye": 70500}
 # === Helper Functions ===
 
 def is_done(current):
-    return all(current[r] >= target[r] for r in target)
+    return current["mox"] >= target["mox"] and current["aga"] >= target["aga"] and current["lye"] >= target["lye"]
+
+# Pre-compute bonus multipliers for faster lookup
+BONUS_MULTIPLIERS = {1: 1.0, 2: 1.2, 3: 1.4}
 
 def bonus_for_count(n):
-    return {1:1.0, 2:1.2, 3:1.4}[n]
+    return BONUS_MULTIPLIERS[n]
+
+def run_single_simulation(args_tuple):
+    """Run a single simulation. This function is designed to be called by worker processes."""
+    draw_to_choice_map, run_id = args_tuple
+    current_mox, current_aga, current_lye = 0, 0, 0
+    potion_counts = defaultdict(int)
+    total_potions_used = 0
+    
+    # Cache target values for faster comparison
+    target_mox, target_aga, target_lye = target["mox"], target["aga"], target["lye"]
+
+    while current_mox < target_mox or current_aga < target_aga or current_lye < target_lye:
+        draw = tuple(sorted(random.choices(potion_ids, weights=potion_weights, k=3)))
+        chosen_potions = draw_to_choice_map.get(draw)
+
+        if not chosen_potions:
+            raise ValueError(f"No potion selection provided for draw: {draw}")
+
+        count = len(chosen_potions)
+        bonus = BONUS_MULTIPLIERS[count]
+        for pid in chosen_potions:
+            potion = potion_map[pid]
+            current_mox += potion.mox * bonus
+            current_aga += potion.aga * bonus
+            current_lye += potion.lye * bonus
+            potion_counts[pid] += 1
+            total_potions_used += 1
+
+    # Record run data - build dict more efficiently
+    run_record = {
+        "total_potions": total_potions_used,
+        "mox": current_mox,
+        "aga": current_aga,
+        "lye": current_lye,
+    }
+    # Add potion counts (only for potions that were used)
+    for pid in potion_ids:
+        run_record[pid] = potion_counts[pid]
+    return run_record
 
 def run_baseline_simulation(draw_to_choice_map, runs=100000):
-    all_run_data = []
     aggregate_potion_counts = defaultdict(int)
 
-    for _ in range(runs):
-        # Progress bar
-        current = {"mox": 0, "aga": 0, "lye": 0}
-        potion_counts = defaultdict(int)
-        total_potions_used = 0
-
-        while not is_done(current):
-            draw = tuple(sorted(random.choices(potion_ids, weights=potion_weights, k=3)))
-            chosen_potions = draw_to_choice_map.get(draw)
-
-            if not chosen_potions:
-                raise ValueError(f"No potion selection provided for draw: {draw}")
-
-            count = len(chosen_potions)
-            bonus = bonus_for_count(count)
-            for pid in chosen_potions:
-                potion = potion_map[pid]
-                current["mox"] += potion.mox * bonus
-                current["aga"] += potion.aga * bonus
-                current["lye"] += potion.lye * bonus
-                potion_counts[pid] += 1
-                total_potions_used += 1
-
-        # Record run data
-        run_record = {
-            "total_potions": total_potions_used,
-            "mox": current["mox"],
-            "aga": current["aga"],
-            "lye": current["lye"],
-            **{pid: potion_counts[pid] for pid in potion_ids}
-        }
-        all_run_data.append(run_record)
-
-        for pid in potion_ids:
-            aggregate_potion_counts[pid] += potion_counts[pid]
-        if _ % max(1, runs // 10) == 0:
-            print(f"Progress: {(_ / runs) * 100:.2f}%")
-
+    # Determine number of workers (up to CPU count)
+    num_workers = multiprocessing.cpu_count()
+    print(f"Using {num_workers} worker processes for {runs} simulation runs\n")
+    
+    # Prepare arguments for worker processes
+    # Each worker will receive (draw_to_choice_map, run_id)
+    run_args = [(draw_to_choice_map, run_id) for run_id in range(runs)]
+    
+    # Run simulations in parallel using multiprocessing pool with progress tracking
+    all_run_data = []
+    completed = 0
+    # Update every 1% or every 100 runs, whichever is smaller (for better responsiveness)
+    update_interval = max(1, min(runs // 100, 100))
+    
+    print("Running simulations...")
+    with Pool(processes=num_workers) as pool:
+        # Use imap_unordered to get results as they complete for better progress tracking
+        for result in pool.imap_unordered(run_single_simulation, run_args):
+            all_run_data.append(result)
+            completed += 1
+            # Update progress bar at intervals or on completion
+            if completed % update_interval == 0 or completed == runs:
+                percentage = (completed / runs) * 100
+                bar_length = 40
+                filled = int(bar_length * completed / runs)
+                bar = '█' * filled + '░' * (bar_length - filled)
+                print(f"\rProgress: [{bar}] {percentage:6.2f}% ({completed:,}/{runs:,} runs completed)", end='', flush=True)
+    
+    print("\n✓ All simulations completed!\n")  # New line after progress bar
+    
     # === Summary Statistics ===
-    total_potions_list = [run["total_potions"] for run in all_run_data]
-    mox_list = [run["mox"] for run in all_run_data]
-    aga_list = [run["aga"] for run in all_run_data]
-    lye_list = [run["lye"] for run in all_run_data]
-
+    # Compute all statistics in a single pass over the data
+    total_potions_sum = 0
+    mox_sum, aga_sum, lye_sum = 0, 0, 0
+    total_potions_min = float('inf')
+    total_potions_max = 0
+    mox_min = aga_min = lye_min = float('inf')
+    mox_max = aga_max = lye_max = 0
+    min_run_total_potions = None
+    max_run_total_potions = None
+    min_run_mox = min_run_aga = min_run_lye = None
+    max_run_mox = max_run_aga = max_run_lye = None
+    
+    # Per-potion statistics
+    potion_mins = {pid: float('inf') for pid in potion_ids}
+    potion_maxs = {pid: 0 for pid in potion_ids}
+    
+    # Single pass aggregation
+    for run_record in all_run_data:
+        # Aggregate potion counts
+        for pid in potion_ids:
+            count = run_record[pid]
+            aggregate_potion_counts[pid] += count
+            if count < potion_mins[pid]:
+                potion_mins[pid] = count
+            if count > potion_maxs[pid]:
+                potion_maxs[pid] = count
+        
+        # Total potions statistics
+        total_potions = run_record["total_potions"]
+        total_potions_sum += total_potions
+        if total_potions < total_potions_min:
+            total_potions_min = total_potions
+            min_run_total_potions = run_record
+        if total_potions > total_potions_max:
+            total_potions_max = total_potions
+            max_run_total_potions = run_record
+        
+        # Resource statistics
+        mox_val = run_record["mox"]
+        aga_val = run_record["aga"]
+        lye_val = run_record["lye"]
+        mox_sum += mox_val
+        aga_sum += aga_val
+        lye_sum += lye_val
+        
+        if mox_val < mox_min:
+            mox_min = mox_val
+            min_run_mox = run_record
+        if mox_val > mox_max:
+            mox_max = mox_val
+            max_run_mox = run_record
+            
+        if aga_val < aga_min:
+            aga_min = aga_val
+            min_run_aga = run_record
+        if aga_val > aga_max:
+            aga_max = aga_val
+            max_run_aga = run_record
+            
+        if lye_val < lye_min:
+            lye_min = lye_val
+            min_run_lye = run_record
+        if lye_val > lye_max:
+            lye_max = lye_val
+            max_run_lye = run_record
+    
+    # Calculate averages
+    avg_potions_used = total_potions_sum / runs
+    avg_per_potion = {pid: aggregate_potion_counts[pid] / runs for pid in potion_ids}
+    avg_targets = {
+        "mox": mox_sum / runs,
+        "aga": aga_sum / runs,
+        "lye": lye_sum / runs,
+    }
+    
+    # Helper functions for min/max runs (now using pre-computed values)
     def min_run_by(key):
+        if key == "total_potions":
+            return min_run_total_potions
+        elif key == "mox":
+            return min_run_mox
+        elif key == "aga":
+            return min_run_aga
+        elif key == "lye":
+            return min_run_lye
         return min(all_run_data, key=lambda x: x[key])
 
     def max_run_by(key):
+        if key == "total_potions":
+            return max_run_total_potions
+        elif key == "mox":
+            return max_run_mox
+        elif key == "aga":
+            return max_run_aga
+        elif key == "lye":
+            return max_run_lye
         return max(all_run_data, key=lambda x: x[key])
-
-    avg_potions_used = sum(total_potions_list) / runs
-    avg_per_potion = {pid: aggregate_potion_counts[pid] / runs for pid in potion_ids}
-    avg_targets = {
-        "mox": sum(mox_list) / runs,
-        "aga": sum(aga_list) / runs,
-        "lye": sum(lye_list) / runs,
-    }
 
     # === Prepare Output Directory ===
     strategy_basename = os.path.splitext(os.path.basename(args.strategy_file))[0]
@@ -132,14 +246,13 @@ def run_baseline_simulation(draw_to_choice_map, runs=100000):
 
         # Overall potions used
         writer.writerow(["Average Potions Used", f"{avg_potions_used:.2f}"])
-        writer.writerow(["Minimum Potions Used", min(total_potions_list)])
-        writer.writerow(["Maximum Potions Used", max(total_potions_list)])
+        writer.writerow(["Minimum Potions Used", total_potions_min])
+        writer.writerow(["Maximum Potions Used", total_potions_max])
 
         writer.writerow([])
         writer.writerow(["Potion Type", "Average", "Minimum", "Maximum"])
         for pid in potion_ids:
-            per_run = [run[pid] for run in all_run_data]
-            writer.writerow([pid, f"{avg_per_potion[pid]:.2f}", min(per_run), max(per_run)])
+            writer.writerow([pid, f"{avg_per_potion[pid]:.2f}", potion_mins[pid], potion_maxs[pid]])
 
         writer.writerow([])
         writer.writerow(["Target Resource", "Average", "Minimum (MOX,AGA,LYE)", "Maximum (MOX,AGA,LYE)"])
