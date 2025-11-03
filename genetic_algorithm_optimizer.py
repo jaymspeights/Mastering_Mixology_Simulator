@@ -20,29 +20,43 @@ from datetime import datetime
 # We'll duplicate necessary code to avoid circular dependencies
 # Define potions and constants
 class Potion:
-    def __init__(self, id, mox, aga, lye, weight):
+    def __init__(self, id, mox, aga, lye, weight, level):
         self.id = id
         self.mox = mox
         self.aga = aga
         self.lye = lye
         self.weight = weight
+        self.level = level
 
 potions = [
-    Potion("AAA", 0, 20, 0, 5),
-    Potion("MMM", 20, 0, 0, 5),
-    Potion("LLL", 0, 0, 20, 5),
-    Potion("MMA", 20, 10, 0, 4),
-    Potion("MML", 20, 0, 10, 4),
-    Potion("AAM", 10, 20, 0, 4),
-    Potion("ALA", 0, 20, 10, 4),
-    Potion("MLL", 10, 0, 20, 4),
-    Potion("ALL", 0, 10, 20, 4),
-    Potion("MAL", 20, 20, 20, 3),
+    Potion("AAA", 0, 20, 0, 5, 60),
+    Potion("MMM", 20, 0, 0, 5, 60),
+    Potion("LLL", 0, 0, 20, 5, 60),
+    Potion("MMA", 20, 10, 0, 4, 63),
+    Potion("MML", 20, 0, 10, 4, 66),
+    Potion("AAM", 10, 20, 0, 4, 69),
+    Potion("ALA", 0, 20, 10, 4, 72),
+    Potion("MLL", 10, 0, 20, 4, 75),
+    Potion("ALL", 0, 10, 20, 4, 78),
+    Potion("MAL", 20, 20, 20, 3, 81),
 ]
 
 potion_map = {p.id: p for p in potions}
-potion_ids = list(potion_map.keys())
-potion_weights = [potion_map[pid].weight for pid in potion_ids]
+
+
+def get_available_potions(level=99):
+    """Get potions available at the given level.
+    
+    Args:
+        level: Maximum level requirement (default: 99)
+    
+    Returns:
+        Tuple of (potion_ids, potion_weights) filtered by level
+    """
+    available_potions = [p for p in potions if p.level <= level]
+    available_ids = [p.id for p in available_potions]
+    available_weights = [p.weight for p in available_potions]
+    return available_ids, available_weights
 
 target = {"mox": 61050, "aga": 52550, "lye": 70500}
 BONUS_MULTIPLIERS = {1: 1.0, 2: 1.2, 3: 1.4}
@@ -606,7 +620,7 @@ def evaluate_children(children, evaluation_runs=100, epoch_num=0):
 
 def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.csv", 
                     num_children=10, evaluation_runs=100,
-                    base_output_dir="genetic_algorithm_runs", max_mutations=10):
+                    base_output_dir="genetic_algorithm_runs", max_mutations=10, level=99):
     """Run epochs of genetic algorithm until Ctrl-C is pressed.
     
     Args:
@@ -619,6 +633,7 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
         base_output_dir: Base directory for output (default: "genetic_algorithm_runs")
         max_mutations: Maximum number of mutations per child (default: 10).
                       Each child gets 0 to max_mutations mutations randomly.
+        level: Maximum level requirement for potions (default: 99)
     
     Returns:
         Best strategy across all epochs
@@ -632,8 +647,17 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
         print(f"Starting from random strategies (template: {template_file})")
     print(f"Children per generation: {num_children}")
     print(f"Evaluations per child: {evaluation_runs}")
+    print(f"Level requirement: {level}")
     print("Running until Ctrl-C is pressed...")
     print("=" * 70 + "\n")
+    
+    # Get available potions based on level
+    available_potion_ids, available_potion_weights = get_available_potions(level)
+    print(f"Available potions at level {level}: {', '.join(available_potion_ids)}")
+    print(f"Total available: {len(available_potion_ids)} potions\n")
+    
+    if not available_potion_ids:
+        raise ValueError(f"No potions available at level {level}")
     
     # Pre-generate draws once for all epochs
     # Total draws = 5000 * 3 * 500 = 7,500,000
@@ -642,7 +666,7 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
     total_draws = 5000 * 3 * draws_unit  # 7,500,000
     print(f"Pre-generating {total_draws:,} draws for all epochs...")
     _shared_draws = [
-        tuple(sorted(random.choices(potion_ids, weights=potion_weights, k=3)))
+        tuple(sorted(random.choices(available_potion_ids, weights=available_potion_weights, k=3)))
         for _ in range(total_draws)
     ]
     print(f"✓ Pre-generated {len(_shared_draws):,} draws\n")
@@ -838,6 +862,12 @@ if __name__ == "__main__":
         default=10,
         help="Maximum number of mutations per child (default: 10). Each child gets 0 to max_mutations mutations randomly."
     )
+    parser.add_argument(
+        "--level",
+        type=int,
+        default=99,
+        help="Herblore level (default: 99). Only potions with level <= this will be drawn."
+    )
     
     args = parser.parse_args()
     
@@ -847,7 +877,8 @@ if __name__ == "__main__":
         num_children=args.children,
         evaluation_runs=args.runs,
         base_output_dir=args.output_dir,
-        max_mutations=args.max_mutations
+        max_mutations=args.max_mutations,
+        level=args.level
     )
 
 
