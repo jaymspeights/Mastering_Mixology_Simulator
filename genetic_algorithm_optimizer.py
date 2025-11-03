@@ -574,7 +574,6 @@ def evaluate_children(children, evaluation_runs=100, epoch_num=0):
     update_interval = max(1, num_children // 50)
     best_avg_so_far = float('inf')
     
-    print(f"  Epoch {epoch_num} - Running evaluations...")
     with Pool(processes=num_workers, initializer=init_worker, initargs=(_shared_draws,)) as pool:
         for child_id, _, avg_potions in pool.imap_unordered(evaluate_strategy_worker, eval_args):
             avg_results.append((child_id, avg_potions))
@@ -589,8 +588,11 @@ def evaluate_children(children, evaluation_runs=100, epoch_num=0):
                 filled = int(bar_length * completed / num_children)
                 bar = '█' * filled + '░' * (bar_length - filled)
                 best_info = f" | Best avg: {best_avg_so_far:.2f}" if best_avg_so_far < float('inf') else ""
-                print(f"\r  Epoch {epoch_num} Progress: [{bar}] {percentage:6.2f}% ({completed}/{num_children} children){best_info}", 
+                print(f"\rEpoch {epoch_num} Progress: [{bar}] {percentage:6.2f}% ({completed}/{num_children} children){best_info}", 
                       end='', flush=True)
+    
+    # Print newline after progress bar completes
+    print()
     
     # Find worst average from this epoch (highest avg_potions_used)
     avg_values = [avg for _, avg in avg_results]
@@ -598,8 +600,6 @@ def evaluate_children(children, evaluation_runs=100, epoch_num=0):
     
     # Use worst of current epoch as reference for scoring
     worst_avg_reference = worst_avg_current
-    
-    print(f"\n  Calculating scores (reference: {worst_avg_reference:.2f})...")
     
     # Calculate scores from stored averages (no re-evaluation needed)
     # Score = (worst_avg_reference - avg_potions)²
@@ -611,8 +611,6 @@ def evaluate_children(children, evaluation_runs=100, epoch_num=0):
     
     # Sort by score (higher is better)
     child_results.sort(key=lambda x: x[1], reverse=True)
-    
-    print(f"  ✓ Epoch {epoch_num} completed!\n")
     
     return child_results
 
@@ -687,19 +685,11 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
     
     try:
         # Run first epoch
-        print("=" * 70)
-        print(f"EPOCH 0 (Initial Generation)")
-        print("=" * 70)
-        
         if parent_strategy_file:
             # Load initial parent strategy and generate children from it
-            print("Loading initial parent strategy...")
             parent_rows = load_strategy_from_csv(parent_strategy_file)
-            print(f"Loaded {len(parent_rows)} strategy rows\n")
-            print(f"Generating {num_children} children from parent...")
             children = generate_children(parent_rows, num_children=num_children, 
                                          max_mutations=max_mutations)
-            print(f"✓ Generated {len(children)} children\n")
         else:
             # Generate random children from template
             children = generate_random_children_from_template(template_file, num_children=num_children)
@@ -718,8 +708,6 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
                 best_overall = best_rows
                 best_overall_score = best_score
                 best_overall_avg_potions = best_avg_potions
-            
-            print(f"  Epoch 0 Best: {best_score:.2f} (avg_potions_used: {best_avg_potions:.2f})")
         
         # Run subsequent epochs until Ctrl-C
         epoch = 1
@@ -729,19 +717,12 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
                 print("\n⚠ No children have positive scores. Ending simulation.")
                 break
             
-            print("\n" + "=" * 70)
-            print(f"EPOCH {epoch}")
-            print("=" * 70)
-            
             # Generate new children from previous generation using selection, crossover, and mutation
-            print(f"Generating {num_children} children from previous generation...")
-            print("  (Selection + Crossover + Mutation)")
             children = generate_children_from_population(
                 current_generation, 
                 num_children=num_children,
                 max_mutations=max_mutations
             )
-            print(f"✓ Generated {len(children)} children\n")
             
             # Evaluate new generation
             current_generation = evaluate_children(children, evaluation_runs, epoch_num=epoch)
@@ -759,8 +740,6 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
                 best_overall = best_rows
                 best_overall_score = best_score
                 best_overall_avg_potions = best_avg_potions
-            
-            print(f"  Epoch {epoch} Best: {best_score:.2f} (avg_potions_used: {best_avg_potions:.2f})")
             epoch += 1
             
     except KeyboardInterrupt:
