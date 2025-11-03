@@ -636,8 +636,10 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
     print("=" * 70 + "\n")
     
     # Pre-generate draws once for all epochs
+    # Total draws = 5000 * 3 * 500 = 7,500,000
     global _shared_draws
-    total_draws = 1_500_000
+    draws_unit = 500
+    total_draws = 5000 * 3 * draws_unit  # 7,500,000
     print(f"Pre-generating {total_draws:,} draws for all epochs...")
     _shared_draws = [
         tuple(sorted(random.choices(potion_ids, weights=potion_weights, k=3)))
@@ -821,7 +823,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--runs",
         type=int,
-        default=100,
+        default=500,
         help="Number of simulation runs per child (default: 100)"
     )
     parser.add_argument(
