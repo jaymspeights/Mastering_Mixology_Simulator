@@ -14,7 +14,6 @@ import multiprocessing
 from multiprocessing import Pool
 from collections import defaultdict
 from itertools import product
-from datetime import datetime
 
 # Import from the original simulation file
 # We'll duplicate necessary code to avoid circular dependencies
@@ -660,10 +659,8 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
         raise ValueError(f"No potions available at level {level}")
     
     # Pre-generate draws once for all epochs
-    # Total draws = 5000 * 3 * 500 = 7,500,000
     global _shared_draws
-    draws_unit = 500
-    total_draws = 5000 * 3 * draws_unit  # 7,500,000
+    total_draws = 5000 * 3 * evaluation_runs
     print(f"Pre-generating {total_draws:,} draws for all epochs...")
     _shared_draws = [
         tuple(sorted(random.choices(available_potion_ids, weights=available_potion_weights, k=3)))
@@ -684,11 +681,9 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
     # Track best across all epochs
     best_overall = None
     best_overall_score = float('-inf')
+    best_overall_avg_potions = None
     current_generation = None
     last_epoch_num = 0
-    
-    # Generate timestamp for folder naming
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     try:
         # Run first epoch
@@ -722,6 +717,7 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
             if best_score > best_overall_score:
                 best_overall = best_rows
                 best_overall_score = best_score
+                best_overall_avg_potions = best_avg_potions
             
             print(f"  Epoch 0 Best: {best_score:.2f} (avg_potions_used: {best_avg_potions:.2f})")
         
@@ -762,6 +758,7 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
             if best_score > best_overall_score:
                 best_overall = best_rows
                 best_overall_score = best_score
+                best_overall_avg_potions = best_avg_potions
             
             print(f"  Epoch {epoch} Best: {best_score:.2f} (avg_potions_used: {best_avg_potions:.2f})")
             epoch += 1
@@ -776,29 +773,7 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
             if best_score > best_overall_score:
                 best_overall = best_rows
                 best_overall_score = best_score
-    
-    # Save last epoch results
-    if current_generation:
-        print("\n" + "=" * 70)
-        print("SAVING RESULTS")
-        print("=" * 70)
-        print(f"Saving last epoch (epoch {last_epoch_num}) results...")
-        
-        # Create folder name: timestamp_epochs{num}_children{num}
-        folder_name = f"{timestamp}_epochs{last_epoch_num}_children{num_children}"
-        epoch_dir = os.path.join(base_output_dir, folder_name)
-        os.makedirs(epoch_dir, exist_ok=True)
-        
-        best_child_id, best_score, best_avg_potions, best_rows = current_generation[0]
-        save_strategy_to_csv(best_rows, os.path.join(epoch_dir, "best_strategy.csv"))
-        
-        with open(os.path.join(epoch_dir, "results.csv"), 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(['child_id', 'score', 'avg_potions_used', 'rank'])
-            for rank, (child_id, score, avg_potions, _) in enumerate(current_generation, 1):
-                writer.writerow([child_id, f"{score:.2f}", f"{avg_potions:.2f}", rank])
-        
-        print(f"✓ Saved epoch {last_epoch_num} results to: {folder_name}\n")
+                best_overall_avg_potions = best_avg_potions
     
     # Save overall best strategy
     print("\n" + "=" * 70)
@@ -808,12 +783,20 @@ def run_multi_epoch(parent_strategy_file=None, template_file="strategy_template.
         # Use best from current generation if no overall best was set
         best_overall = current_generation[0][3]
         best_overall_score = current_generation[0][1]
+        best_overall_avg_potions = current_generation[0][2]
     
-    if best_overall:
-        best_overall_path = os.path.join(base_output_dir, "best_strategy_overall.csv")
-        save_strategy_to_csv(best_overall, best_overall_path)
-        print(f"Best strategy across all epochs saved to: {best_overall_path}")
+    if best_overall and best_overall_avg_potions is not None:
+        # Format avg_potions to 2 decimal places for filename
+        filename = f"level_{level}_avg_{int(best_overall_avg_potions)}_runs_{evaluation_runs}.csv"
+        output_path = os.path.join(base_output_dir, filename)
+        
+        # Ensure output directory exists
+        os.makedirs(base_output_dir, exist_ok=True)
+        
+        save_strategy_to_csv(best_overall, output_path)
+        print(f"Best strategy saved to: {output_path}")
         print(f"Best overall score: {best_overall_score:.2f}")
+        print(f"Best overall avg_potions_used: {best_overall_avg_potions:.2f}")
     else:
         print("No valid strategies found.")
     print("=" * 70)
